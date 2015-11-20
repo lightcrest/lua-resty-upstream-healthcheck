@@ -90,14 +90,16 @@ local function set_peer_down_globally(ctx, is_backup, id, value)
     end
 end
 
-local function peer_fail(ctx, is_backup, id, peer)
+local function peer_fail(ctx, is_backup, id, peer, monitor)
     debug("peer ", peer.name, " was checked to be not ok")
 
     local u = ctx.upstream
     local dict = ctx.dict
-
-    local key = gen_peer_key("nok:", u, is_backup, id)
+    local ok_key_prefix = "ok-" .. monitor
+    local nok_key_prefix = "nok-" .. monitor
+    local key = gen_peer_key(nok_key_prefix, u, is_backup, id)
     local fails, err = dict:get(key)
+
     if not fails then
         if err then
             errlog("failed to get peer nok key: ", err)
@@ -120,7 +122,7 @@ local function peer_fail(ctx, is_backup, id, peer)
     end
 
     if fails == 1 then
-        key = gen_peer_key("ok:", u, is_backup, id)
+        key = gen_peer_key(ok_key_prefix, u, is_backup, id)
         local succ, err = dict:get(key)
         if not succ or succ == 0 then
             if err then
@@ -146,14 +148,16 @@ local function peer_fail(ctx, is_backup, id, peer)
     end
 end
 
-local function peer_ok(ctx, is_backup, id, peer)
+local function peer_ok(ctx, is_backup, id, peer, monitor)
     debug("peer ", peer.name, " was checked to be ok")
 
     local u = ctx.upstream
     local dict = ctx.dict
-
-    local key = gen_peer_key("ok:", u, is_backup, id)
+    local ok_key_prefix = "ok-" .. monitor
+    local nok_key_prefix = "nok-" .. monitor
+    local key = gen_peer_key(ok_key_prefix, u, is_backup, id)
     local succ, err = dict:get(key)
+
     if not succ then
         if err then
             errlog("failed to get peer ok key: ", err)
@@ -176,7 +180,7 @@ local function peer_ok(ctx, is_backup, id, peer)
     end
 
     if succ == 1 then
-        key = gen_peer_key("nok:", u, is_backup, id)
+        key = gen_peer_key(nok_key_prefix, u, is_backup, id)
         local fails, err = dict:get(key)
         if not fails or fails == 0 then
             if err then
@@ -224,14 +228,14 @@ local function check_peer(ctx, id, peer, is_backup)
         if not peer.down then
             errlog("failed to connect to ", name, ": ", err)
         end
-        peer_fail(ctx, is_backup, id, peer)
+        peer_fail(ctx, is_backup, id, peer, "tcp")
     else
         local bytes, err = sock:send(req)
         if not bytes then
             if not peer.down then
                 errlog("failed to send request to ", name, ": ", err)
             end
-            peer_fail(ctx, is_backup, id, peer)
+            peer_fail(ctx, is_backup, id, peer, "request")
         else
             local status_line, err = sock:receive()
             if not status_line then
@@ -239,7 +243,7 @@ local function check_peer(ctx, id, peer, is_backup)
                     errlog("failed to receive status line from ", name,
                            ": ", err)
                 end
-                peer_fail(ctx, is_backup, id, peer)
+                peer_fail(ctx, is_backup, id, peer, "status")
             else
                 if statuses then
                     local from, to, err = re_find(status_line,
@@ -250,7 +254,7 @@ local function check_peer(ctx, id, peer, is_backup)
                             errlog("bad status line from ", name, ": ",
                                    status_line)
                         end
-                        peer_fail(ctx, is_backup, id, peer)
+                        peer_fail(ctx, is_backup, id, peer, "status")
                     else
                         local status = tonumber(sub(status_line, from, to))
                         if not statuses[status] then
@@ -258,13 +262,13 @@ local function check_peer(ctx, id, peer, is_backup)
                                 errlog("bad status code from ",
                                        name, ": ", status)
                             end
-                            peer_fail(ctx, is_backup, id, peer)
+                            peer_fail(ctx, is_backup, id, peer, "status")
                         else
-                            peer_ok(ctx, is_backup, id, peer)
+                            peer_ok(ctx, is_backup, id, peer, "status")
                         end
                     end
                 else
-                    peer_ok(ctx, is_backup, id, peer)
+                    peer_ok(ctx, is_backup, id, peer, "status")
                 end
             end
             sock:close()
