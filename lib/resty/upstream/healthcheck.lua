@@ -55,7 +55,7 @@ end
 
 local function errlog(...)
     log(ERR, "healthcheck: ", ...)
-end
+ end
 
 local function debug(...)
     -- print("debug mode: ", debug_mode)
@@ -90,14 +90,16 @@ local function set_peer_down_globally(ctx, is_backup, id, value)
     end
 end
 
-local function peer_fail(ctx, is_backup, id, peer)
+local function peer_fail(ctx, is_backup, id, peer, monitor)
     debug("peer ", peer.name, " was checked to be not ok")
 
     local u = ctx.upstream
     local dict = ctx.dict
-
-    local key = gen_peer_key("nok:", u, is_backup, id)
+    local ok_key_prefix = "ok-" .. monitor 
+    local nok_key_prefix = "nok-" .. monitor 
+    local key = gen_peer_key(nok_key_prefix, u, is_backup, id)
     local fails, err = dict:get(key)
+
     if not fails then
         if err then
             errlog("failed to get peer nok key: ", err)
@@ -109,22 +111,22 @@ local function peer_fail(ctx, is_backup, id, peer)
         -- purpose here.
         local ok, err = dict:set(key, 1)
         if not ok then
-            errlog("failed to set peer nok key: ", err)
+           errlog("failed to set peer nok key: ", err)
         end
     else
         fails = fails + 1
         local ok, err = dict:incr(key, 1)
         if not ok then
-            errlog("failed to incr peer nok key: ", err)
+           errlog("failed to incr peer nok key: ", err)
         end
     end
 
     if fails == 1 then
-        key = gen_peer_key("ok:", u, is_backup, id)
+        key = gen_peer_key(ok_key_prefix, u, is_backup, id)
         local succ, err = dict:get(key)
         if not succ or succ == 0 then
             if err then
-                errlog("failed to get peer ok key: ", err)
+               errlog("failed to get peer ok key: ", err)
                 return
             end
         else
@@ -135,8 +137,7 @@ local function peer_fail(ctx, is_backup, id, peer)
         end
     end
 
-    -- print("ctx fall: ", ctx.fall, ", peer down: ", peer.down,
-          -- ", fails: ", fails)
+   -- ngx.log(ngx.STDERR,"key: ", key, ", ctx fall: ", ctx.fall, ", peer down: ", peer.down, ", fails: ", fails)
 
     if not peer.down and fails >= ctx.fall then
         warn("peer ", peer.name, " is turned down after ", fails,
@@ -146,13 +147,14 @@ local function peer_fail(ctx, is_backup, id, peer)
     end
 end
 
-local function peer_ok(ctx, is_backup, id, peer)
+local function peer_ok(ctx, is_backup, id, peer, monitor)
     debug("peer ", peer.name, " was checked to be ok")
 
     local u = ctx.upstream
     local dict = ctx.dict
-
-    local key = gen_peer_key("ok:", u, is_backup, id)
+    local ok_key_prefix = "ok-" .. monitor 
+    local nok_key_prefix = "nok-" .. monitor 
+    local key = gen_peer_key(ok_key_prefix, u, is_backup, id)
     local succ, err = dict:get(key)
     if not succ then
         if err then
@@ -176,7 +178,7 @@ local function peer_ok(ctx, is_backup, id, peer)
     end
 
     if succ == 1 then
-        key = gen_peer_key("nok:", u, is_backup, id)
+        key = gen_peer_key(nok_key_prefix, u, is_backup, id)
         local fails, err = dict:get(key)
         if not fails or fails == 0 then
             if err then
@@ -205,6 +207,7 @@ local function check_peer(ctx, id, peer, is_backup)
     local name = peer.name
     local statuses = ctx.statuses
     local req = ctx.http_req
+    local body = ctx.body
 
     local sock, err = stream_sock()
     if not sock then
@@ -224,14 +227,14 @@ local function check_peer(ctx, id, peer, is_backup)
         if not peer.down then
             errlog("failed to connect to ", name, ": ", err)
         end
-        peer_fail(ctx, is_backup, id, peer)
+        peer_fail(ctx, is_backup, id, peer, "tcp")
     else
         local bytes, err = sock:send(req)
         if not bytes then
             if not peer.down then
                 errlog("failed to send request to ", name, ": ", err)
             end
-            peer_fail(ctx, is_backup, id, peer)
+            peer_fail(ctx, is_backup, id, peer, "request")
         else
             local status_line, err = sock:receive()
             if not status_line then
@@ -239,7 +242,7 @@ local function check_peer(ctx, id, peer, is_backup)
                     errlog("failed to receive status line from ", name,
                            ": ", err)
                 end
-                peer_fail(ctx, is_backup, id, peer)
+                peer_fail(ctx, is_backup, id, peer, "status")
             else
                 if statuses then
                     local from, to, err = re_find(status_line,
@@ -250,7 +253,7 @@ local function check_peer(ctx, id, peer, is_backup)
                             errlog("bad status line from ", name, ": ",
                                    status_line)
                         end
-                        peer_fail(ctx, is_backup, id, peer)
+                        peer_fail(ctx, is_backup, id, peer, "status")
                     else
                         local status = tonumber(sub(status_line, from, to))
                         if not statuses[status] then
@@ -258,14 +261,23 @@ local function check_peer(ctx, id, peer, is_backup)
                                 errlog("bad status code from ",
                                        name, ": ", status)
                             end
-                            peer_fail(ctx, is_backup, id, peer)
+                            peer_fail(ctx, is_backup, id, peer, "status")
                         else
-                            peer_ok(ctx, is_backup, id, peer)
+                            peer_ok(ctx, is_backup, id, peer, "status")
                         end
                     end
                 else
-                    peer_ok(ctx, is_backup, id, peer)
+                    peer_ok(ctx, is_backup, id, peer, "status")
                 end
+            end
+            if body then
+               local b, err = sock:receive('*a')
+               n,j = string.find(b,body)
+               if not n then
+                  peer_fail(ctx, is_backup, id, peer, "body")
+               else
+                  peer_ok(ctx, is_backup, id, peer, "body")
+               end
             end
             sock:close()
         end
@@ -545,6 +557,11 @@ function _M.spawn_checker(opts)
         end
     end
 
+    local body = opts.body 
+    if not body then 
+       body = nil
+    end 
+
     -- debug("interval: ", interval)
 
     local concur = opts.concurrency
@@ -600,6 +617,7 @@ function _M.spawn_checker(opts)
         statuses = statuses,
         version = 0,
         concurrency = concur,
+        body = body,
     }
 
     local ok, err = new_timer(0, check, ctx)
