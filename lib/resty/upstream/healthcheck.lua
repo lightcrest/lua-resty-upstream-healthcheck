@@ -209,6 +209,7 @@ local function check_peer(ctx, id, peer, is_backup)
     local name = peer.name
     local statuses = ctx.statuses
     local req = ctx.http_req
+    local body = ctx.body
 
     local sock, err = stream_sock()
     if not sock then
@@ -270,6 +271,15 @@ local function check_peer(ctx, id, peer, is_backup)
                 else
                     peer_ok(ctx, is_backup, id, peer, "status")
                 end
+            end
+            if body then
+               local b, err = sock:receive('*a')
+               local n, j = string.find(b, body)
+               if not n then
+                  peer_fail(ctx, is_backup, id, peer, "body")
+               else
+                  peer_ok(ctx, is_backup, id, peer, "body")
+               end
             end
             sock:close()
         end
@@ -549,6 +559,11 @@ function _M.spawn_checker(opts)
         end
     end
 
+    local body = opts.body
+    if not body then
+       body = nil
+    end
+
     -- debug("interval: ", interval)
 
     local concur = opts.concurrency
@@ -604,6 +619,7 @@ function _M.spawn_checker(opts)
         statuses = statuses,
         version = 0,
         concurrency = concur,
+        body = body,
     }
 
     local ok, err = new_timer(0, check, ctx)
