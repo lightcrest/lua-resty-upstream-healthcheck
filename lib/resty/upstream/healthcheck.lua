@@ -214,6 +214,7 @@ local function check_peer(ctx, id, peer, is_backup)
     local name = peer.name
     local statuses = ctx.statuses
     local req = ctx.http_req
+    local http_body = ctx.http_body
 
     local sock, err = stream_sock()
     if not sock then
@@ -268,6 +269,17 @@ local function check_peer(ctx, id, peer, is_backup)
         if not statuses[status] then
             peer_error(ctx, is_backup, id, peer, "bad status code from ",
                        name, ": ", status)
+            sock:close()
+            return
+        end
+    end
+
+    if http_body then
+        local b, err = sock:receive('*a')
+        local n, j = string.find(b, http_body)
+            if not n then
+            peer_error(ctx, is_backup, id, peer,
+                       "failed to find matching body text from ", name, ": ", err)
             sock:close()
             return
         end
@@ -565,6 +577,11 @@ function _M.spawn_checker(opts)
         end
     end
 
+    local http_body = opts.http_body
+    if not http_body then
+        http_body = nil
+    end
+
     -- debug("interval: ", interval)
 
     local concur = opts.concurrency
@@ -620,6 +637,7 @@ function _M.spawn_checker(opts)
         statuses = statuses,
         version = 0,
         concurrency = concur,
+        http_body = http_body,
     }
 
     local ok, err = new_timer(0, check, ctx)

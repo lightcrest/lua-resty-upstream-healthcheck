@@ -58,6 +58,8 @@ http {
 
             http_req = "GET /status HTTP/1.0\r\nHost: foo.com\r\n\r\n",
                     -- raw HTTP request for checking
+            http_body = "deadbeef",
+                    -- check the HTTP response for this string
 
             interval = 2000,  -- run the check cycle every 2 sec
             timeout = 1000,   -- 1 sec is the timeout for network operations
